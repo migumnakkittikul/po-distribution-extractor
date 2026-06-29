@@ -40,6 +40,39 @@ type branch struct {
 	items   []item
 }
 
+var branchThaiName = map[string]string{
+	"1001": "รังสิต",
+	"1002": "บางนา",
+	"1003": "นนทบุรี",
+	"1004": "ลาดพร้าว",
+	"1005": "บางแค",
+	"1006": "มีนบุรี",
+	"1007": "ปทุมธานี",
+	"1008": "สมุทรปราการ",
+	"1009": "ชลบุรี",
+	"1010": "ระยอง",
+	"1011": "เชียงใหม่",
+	"1012": "เชียงราย",
+	"1013": "ขอนแก่น",
+	"1014": "อุดรธานี",
+	"1015": "นครราชสีมา",
+	"1016": "อุบลราชธานี",
+	"1017": "ภูเก็ต",
+	"1018": "สุราษฎร์ธานี",
+	"1019": "สงขลา",
+	"1020": "หาดใหญ่",
+	"1021": "พิษณุโลก",
+	"1022": "นครสวรรค์",
+	"1023": "ราชบุรี",
+	"1024": "กาญจนบุรี",
+	"1025": "ลพบุรี",
+	"1026": "อยุธยา",
+	"1027": "สระบุรี",
+	"1028": "ฉะเชิงเทรา",
+	"1029": "นครปฐม",
+	"1030": "เพชรบุรี",
+}
+
 func main() {
 	inFlag := flag.String("in", "", "input PDF")
 	outFlag := flag.String("out", "", "output .xlsx")
@@ -266,16 +299,34 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 	}
 
 	row := 3
+	totals := map[string]int{}
 	for _, b := range branches {
 		set(2, row, b.code+" "+b.engName)
+		if name, ok := branchThaiName[b.code]; ok {
+			set(5, row, name)
+		}
 		row++
 		for i, it := range b.items {
 			set(1, row, i+1)
 			set(2, row, it.sku)
 			set(3, row, it.model)
 			set(4, row, it.qty)
+			totals[it.model] += it.qty
 			row++
 		}
+	}
+
+	// Per-model totals in G:H.
+	set(7, 3, "รุ่น")
+	set(8, 3, "จำนวน")
+	models := make([]string, 0, len(totals))
+	for m := range totals {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+	for i, m := range models {
+		set(7, 4+i, m)
+		set(8, 4+i, totals[m])
 	}
 	if firstErr != nil {
 		return firstErr
