@@ -1,0 +1,13 @@
+# build output
+/po-distribution-extractor
+/po-distribution-extractor.exe
+*.exe
+
+# generated spreadsheets
+/*.xlsx
+!testdata/*.xlsx
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
