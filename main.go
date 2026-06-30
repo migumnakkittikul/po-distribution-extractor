@@ -18,6 +18,12 @@ import (
 
 const sheetName = "ใบแบ่ง"
 
+// Output styling, chosen to match the original ใบแบ่ง sheet (a large Thai font).
+const (
+	fontName = "Angsana New"
+	fontSize = 20.0
+)
+
 const brandTag = "AQUARO"                  // the brand column value; model is the token right after it
 const distributePrefix = "กระจายไปยังสาขา" // marks a "distribute to branch" block header
 
@@ -261,7 +267,7 @@ func parseItem(line string) (item, bool) {
 	return item{sku: sku, model: toks[vegIdx+1], qty: int(qty + 0.5)}, true
 }
 
-// writeXLSX writes the branches into the ใบแบ่ง sheet, one row per line item.
+// writeXLSX renders the branches into the ใบแบ่ง sheet of a fresh workbook.
 func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 	f := excelize.NewFile()
 	defer f.Close()
@@ -271,7 +277,7 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 		return err
 	}
 	f.SetActiveSheet(idx)
-	if err := f.DeleteSheet("Sheet1"); err != nil {
+	if err := f.DeleteSheet("Sheet1"); err != nil { // drop the default sheet
 		return err
 	}
 
@@ -290,33 +296,38 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 		}
 	}
 
-	set(1, 1, "ใบสั่งซื้อเลขที่ "+poNumber)
+	// Title row + invoice number.
+	set(1, 1, "ใบสั่งซื้อเลขที่ "+poNumber) // A1
 	if invoice != "" {
-		set(5, 1, invoice)
+		set(5, 1, invoice) // E1
 	}
+	// Column headers (row 2).
 	for i, h := range []string{"ลำดับ", "SKU No.", "รุ่น", "จำนวน", "สาขา"} {
 		set(i+1, 2, h)
 	}
 
+	// Branch blocks + item rows.
 	row := 3
 	totals := map[string]int{}
 	for _, b := range branches {
-		set(2, row, b.code+" "+b.engName)
+		set(2, row, b.code+" "+b.engName) // B: code + English name (from PDF)
 		if name, ok := branchThaiName[b.code]; ok {
-			set(5, row, name)
+			set(5, row, name) // E: Thai short name (cross-reference)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: no Thai name for branch %s (%s); E left blank\n", b.code, b.engName)
 		}
 		row++
 		for i, it := range b.items {
-			set(1, row, i+1)
-			set(2, row, it.sku)
-			set(3, row, it.model)
-			set(4, row, it.qty)
+			set(1, row, i+1)      // A: line number
+			set(2, row, it.sku)   // B: SKU
+			set(3, row, it.model) // C: model
+			set(4, row, it.qty)   // D: quantity
 			totals[it.model] += it.qty
 			row++
 		}
 	}
 
-	// Per-model totals in G:H.
+	// Summary table (รุ่น -> total qty) in G:H, models sorted ascending.
 	set(7, 3, "รุ่น")
 	set(8, 3, "จำนวน")
 	models := make([]string, 0, len(totals))
@@ -331,5 +342,65 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 	if firstErr != nil {
 		return firstErr
 	}
+
+	// ---- formatting to match the original ใบแบ่ง sheet ----
+	lastRow := row - 1         // last written data row
+	sumLast := 3 + len(models) // last summary row (G/H)
+
+	mk := func(bold bool, h, v string) int {
+		id, e := f.NewStyle(&excelize.Style{
+			Font:      &excelize.Font{Family: fontName, Size: fontSize, Bold: bold},
+			Alignment: &excelize.Alignment{Horizontal: h, Vertical: v},
+		})
+		if e != nil && firstErr == nil {
+			firstErr = e
+		}
+		return id
+	}
+	base := mk(false, "", "")    // plain Angsana 20 (default for the sheet)
+	title := mk(true, "", "top") // row 1
+	hdrC := mk(true, "center", "top")
+	hdrL := mk(true, "left", "top")
+	dCenter := mk(false, "center", "top")  // line#, model, qty
+	dLeft := mk(false, "left", "top")      // SKU / branch name
+	dEmid := mk(false, "center", "center") // branch Thai name (col E)
+	sumData := mk(false, "left", "")
+	if firstErr != nil {
+		return firstErr
+	}
+
+	// Whole-sheet default font (also covers empty cells).
+	_ = f.SetColStyle(sheetName, "A:H", base)
+
+	// Column widths matching the original sheet.
+	for _, cw := range []struct {
+		c string
+		w float64
+	}{{"A", 5.625}, {"B", 15.625}, {"C", 15}, {"D", 8.375}, {"E", 17.625}, {"F", 2.625}, {"G", 16.5}, {"H", 11.875}} {
+		_ = f.SetColWidth(sheetName, cw.c, cw.c, cw.w)
+	}
+	rh, custom := 29.25, true
+	_ = f.SetSheetProps(sheetName, &excelize.SheetPropsOptions{DefaultRowHeight: &rh, CustomHeight: &custom})
+
+	// Title (row 1) and bold column headers (row 2).
+	_ = f.SetCellStyle(sheetName, "A1", "H1", title)
+	_ = f.SetCellStyle(sheetName, "A2", "E2", hdrC)
+	_ = f.SetCellStyle(sheetName, "B2", "B2", hdrL)
+
+	// Data columns (rows 3..last): line#/model/qty centered, SKU/name left, branch centred.
+	_ = f.SetCellStyle(sheetName, "A3", fmt.Sprintf("A%d", lastRow), dCenter)
+	_ = f.SetCellStyle(sheetName, "B3", fmt.Sprintf("B%d", lastRow), dLeft)
+	_ = f.SetCellStyle(sheetName, "C3", fmt.Sprintf("D%d", lastRow), dCenter)
+	_ = f.SetCellStyle(sheetName, "E3", fmt.Sprintf("E%d", lastRow), dEmid)
+
+	// Summary table (G:H).
+	_ = f.SetCellStyle(sheetName, "G3", "G3", hdrC)
+	_ = f.SetCellStyle(sheetName, "H3", "H3", hdrL)
+	_ = f.SetCellStyle(sheetName, "G4", fmt.Sprintf("H%d", sumLast), sumData)
+
+	// Header-row dropdowns + repeat the header row when printing (as in the original).
+	_ = f.AutoFilter(sheetName, fmt.Sprintf("A2:E%d", lastRow), nil)
+	_ = f.SetDefinedName(&excelize.DefinedName{Name: "_xlnm.Print_Titles", RefersTo: "'" + sheetName + "'!$2:$2", Scope: sheetName})
+
 	return f.SaveAs(path)
 }
