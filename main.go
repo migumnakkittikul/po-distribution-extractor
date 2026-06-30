@@ -372,11 +372,45 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 	// Whole-sheet default font (also covers empty cells).
 	_ = f.SetColStyle(sheetName, "A:H", base)
 
-	// Column widths matching the original sheet.
+	// Auto-size columns to their widest content so nothing is cut off - especially
+	// the long branch names in column B. Width units are characters of the default
+	// font; the cells use a larger font, so we scale up and pad generously.
+	rlen := func(s string) int { return len([]rune(s)) }
+	maxA, maxB, maxC, maxD, maxE := rlen("ลำดับ"), rlen("SKU No."), rlen("รุ่น"), rlen("จำนวน"), rlen("สาขา")
+	maxG, maxH := rlen("รุ่น"), rlen("จำนวน")
+	up := func(p *int, n int) {
+		if n > *p {
+			*p = n
+		}
+	}
+	for _, b := range branches {
+		up(&maxB, rlen(b.code+" "+b.engName))
+		up(&maxE, rlen(branchThaiName[b.code]))
+		up(&maxA, len(strconv.Itoa(len(b.items))))
+		for _, it := range b.items {
+			up(&maxB, len(strconv.Itoa(it.sku)))
+			up(&maxC, rlen(it.model))
+			up(&maxD, len(strconv.Itoa(it.qty)))
+		}
+	}
+	for _, m := range models {
+		up(&maxG, rlen(m))
+		up(&maxH, len(strconv.Itoa(totals[m])))
+	}
+	width := func(n int) float64 {
+		w := float64(n)*1.5 + 2 // scale generously for the large Angsana font + padding
+		if w < 5 {
+			w = 5
+		} else if w > 100 {
+			w = 100
+		}
+		return w
+	}
 	for _, cw := range []struct {
 		c string
 		w float64
-	}{{"A", 5.625}, {"B", 15.625}, {"C", 15}, {"D", 8.375}, {"E", 17.625}, {"F", 2.625}, {"G", 16.5}, {"H", 11.875}} {
+	}{{"A", width(maxA)}, {"B", width(maxB)}, {"C", width(maxC)}, {"D", width(maxD)},
+		{"E", width(maxE)}, {"F", 2.625}, {"G", width(maxG)}, {"H", width(maxH)}} {
 		_ = f.SetColWidth(sheetName, cw.c, cw.c, cw.w)
 	}
 	rh, custom := 29.25, true
