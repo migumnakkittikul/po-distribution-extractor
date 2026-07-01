@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"os"
@@ -11,9 +13,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
+	"golang.org/x/text/encoding/charmap"
 )
 
 const sheetName = "ใบแบ่ง"
@@ -84,6 +88,8 @@ func main() {
 	outFlag := flag.String("out", "", "output .xlsx")
 	invFlag := flag.String("invoice", "", "invoice number for cell E1 (optional)")
 	flag.Parse()
+
+	loadBranchCSV() // optional branches.csv next to the program can add/override names
 
 	inPath, err := resolveInput(*inFlag, flag.Args())
 	if err != nil {
@@ -437,4 +443,71 @@ func writeXLSX(path string, branches []branch, poNumber, invoice string) error {
 	_ = f.SetDefinedName(&excelize.DefinedName{Name: "_xlnm.Print_Titles", RefersTo: "'" + sheetName + "'!$2:$2", Scope: sheetName})
 
 	return f.SaveAs(path)
+}
+
+var digitsRe = regexp.MustCompile(`^\d+$`)
+
+// loadBranchCSV looks for an optional "branches.csv" next to the program (or in the
+// current folder) and merges "code,thai_name" rows into branchThaiName. A row whose
+// code already exists overrides the embedded name; a new code is added. It is
+// optional: if no file is found, the embedded 122-branch table is used unchanged.
+// This lets new branches be added without recompiling - just edit the CSV.
+func loadBranchCSV() {
+	for _, dir := range csvSearchDirs() {
+		p := filepath.Join(dir, "branches.csv")
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		n := mergeBranchCSV(data)
+		fmt.Printf("Loaded %d branch name(s) from %s\n", n, p)
+		return
+	}
+}
+
+func csvSearchDirs() []string {
+	var dirs []string
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Dir(exe))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, cwd)
+	}
+	return dirs
+}
+
+func mergeBranchCSV(data []byte) int {
+	r := csv.NewReader(strings.NewReader(decodeText(data)))
+	r.FieldsPerRecord = -1 // allow ragged rows
+	r.TrimLeadingSpace = true
+	n := 0
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			break
+		}
+		if len(rec) < 2 {
+			continue
+		}
+		code := strings.TrimSpace(rec[0])
+		if !digitsRe.MatchString(code) { // skips a header row, comments, blanks
+			continue
+		}
+		branchThaiName[code] = strings.TrimSpace(rec[1])
+		n++
+	}
+	return n
+}
+
+// decodeText returns UTF-8 text from CSV bytes, tolerating a UTF-8 BOM and falling
+// back to Windows-874 (Thai) - the encoding Excel often uses when saving Thai CSVs.
+func decodeText(b []byte) string {
+	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	if out, err := charmap.Windows874.NewDecoder().Bytes(b); err == nil {
+		return string(out)
+	}
+	return string(b)
 }
