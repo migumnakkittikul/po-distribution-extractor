@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
+	"github.com/ncruces/zenity"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/text/encoding/charmap"
 )
@@ -84,28 +87,42 @@ var branchThaiName = map[string]string{
 }
 
 func main() {
-	inFlag := flag.String("in", "", "input PDF")
-	outFlag := flag.String("out", "", "output .xlsx")
-	invFlag := flag.String("invoice", "", "invoice number for cell E1 (optional)")
+	inFlag := flag.String("in", "", "input PDF (headless mode); if omitted, a file picker opens")
+	outFlag := flag.String("out", "", "output .xlsx (headless mode)")
+	invFlag := flag.String("invoice", "", "invoice number for cell E1 (optional; not present in the PDF)")
 	flag.Parse()
 
 	loadBranchCSV() // optional branches.csv next to the program can add/override names
 
+	if *inFlag == "" && len(flag.Args()) == 0 {
+		for {
+			switch guiMenu() {
+			case "convert":
+				runConvertGUI(*invFlag)
+				return
+			case "manage":
+				manageBranchesGUI()
+			default:
+				return
+			}
+		}
+	}
+
 	inPath, err := resolveInput(*inFlag, flag.Args())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		fail(err)
 	}
 	outPath := *outFlag
 	if outPath == "" {
 		outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".xlsx"
 	}
+	fmt.Printf("Reading: %s\n", inPath)
 	nb, ni, err := convert(inPath, outPath, *invFlag, func(int, string) {})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		fail(err)
 	}
-	fmt.Printf("Wrote %s: %d branches, %d items\n", outPath, nb, ni)
+	fmt.Printf("\nDone.  Wrote %s\n  sheet %q - %d branches - %d items\n", outPath, sheetName, nb, ni)
+	pause()
 }
 
 // convert runs the PDF -> sheet pipeline, reporting progress via the callback.
@@ -564,4 +581,173 @@ func saveBranchTo(path, code, name string) error {
 	}
 	out := append([]byte{0xEF, 0xBB, 0xBF}, sb.String()...) // UTF-8 BOM so Excel detects UTF-8
 	return os.WriteFile(path, out, 0o644)
+}
+
+var stdin = bufio.NewReader(os.Stdin)
+
+// runConvertGUI is the convert flow: choose the PDF, choose where to save, show a
+// progress window, then a success/error message - all via native dialogs.
+func runConvertGUI(invoice string) {
+	inPath, err := zenity.SelectFile(
+		zenity.Title("Choose the purchase-order PDF"),
+		zenity.FileFilters{{Name: "PDF files", Patterns: []string{"*.pdf"}}},
+	)
+	if errors.Is(err, zenity.ErrCanceled) {
+		return
+	}
+	if err != nil {
+		zenity.Error(err.Error(), zenity.Title("Error"))
+		return
+	}
+
+	defPath := filepath.Join(filepath.Dir(inPath),
+		strings.TrimSuffix(filepath.Base(inPath), filepath.Ext(inPath))+".xlsx")
+	outPath, err := zenity.SelectFileSave(
+		zenity.Title("Save the Excel file as"),
+		zenity.ConfirmOverwrite(),
+		zenity.Filename(defPath),
+		zenity.FileFilters{{Name: "Excel files", Patterns: []string{"*.xlsx"}}},
+	)
+	if errors.Is(err, zenity.ErrCanceled) {
+		return
+	}
+	if err != nil {
+		zenity.Error(err.Error(), zenity.Title("Error"))
+		return
+	}
+	if filepath.Ext(outPath) == "" {
+		outPath += ".xlsx"
+	}
+
+	dlg, derr := zenity.Progress(
+		zenity.Title("PO Distribution"),
+		zenity.MaxValue(100),
+		zenity.NoCancel(),
+	)
+	progress := func(pct int, msg string) {
+		if derr == nil {
+			dlg.Value(pct)
+			dlg.Text(msg)
+		}
+	}
+
+	nb, ni, cerr := convert(inPath, outPath, invoice, progress)
+	if derr == nil {
+		dlg.Complete()
+		dlg.Close()
+	}
+	if cerr != nil {
+		zenity.Error(cerr.Error(), zenity.Title("Conversion failed"))
+		return
+	}
+	zenity.Info(
+		fmt.Sprintf("Done!\n\nSaved to:\n%s\n\n%d branches - %d items", outPath, nb, ni),
+		zenity.Title("PO Distribution"),
+	)
+}
+
+func pause() {
+	fmt.Print("\nPress Enter to close...")
+	stdin.ReadString('\n')
+}
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, "\nError:", err)
+	pause()
+	os.Exit(1)
+}
+
+// guiMenu shows the start screen and returns "convert", "manage", or "exit".
+func guiMenu() string {
+	err := zenity.Question(
+		"What would you like to do?",
+		zenity.Title("PO Distribution"),
+		zenity.OKLabel("Convert a PO PDF"),
+		zenity.ExtraButton("Manage branches"),
+		zenity.CancelLabel("Exit"),
+	)
+	switch {
+	case err == nil:
+		return "convert"
+	case errors.Is(err, zenity.ErrExtraButton):
+		return "manage"
+	default:
+		return "exit"
+	}
+}
+
+// manageBranchesGUI lets the user view all known branches and add/update names.
+func manageBranchesGUI() {
+	for {
+		codes := sortedBranchCodes()
+		items := make([]string, len(codes))
+		for i, c := range codes {
+			items[i] = c + "    " + branchThaiName[c]
+		}
+		_, err := zenity.List(
+			fmt.Sprintf("%d branches (code -> Thai name).", len(codes)),
+			items,
+			zenity.Title("Branches"),
+			zenity.OKLabel("Add / edit a branch"),
+			zenity.CancelLabel("Close"),
+			zenity.Height(460),
+		)
+		if errors.Is(err, zenity.ErrCanceled) || (err != nil && !errors.Is(err, zenity.ErrExtraButton)) {
+			return
+		}
+		addBranchGUI()
+	}
+}
+
+// addBranchGUI prompts for a code + Thai name and persists it to branches.csv.
+func addBranchGUI() {
+	code, err := zenity.Entry("Branch code (digits only, e.g. 61605):", zenity.Title("Add / edit a branch"))
+	if err != nil {
+		return // canceled
+	}
+	code = strings.TrimSpace(code)
+	if !digitsRe.MatchString(code) {
+		_ = zenity.Error("The branch code must be digits only (e.g. 61605).", zenity.Title("Invalid code"))
+		return
+	}
+	existing := branchThaiName[code]
+	name, err := zenity.Entry(
+		fmt.Sprintf("Thai name for branch %s:", code),
+		zenity.Title("Add / edit a branch"),
+		zenity.EntryText(existing),
+	)
+	if err != nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		_ = zenity.Error("The name cannot be empty.", zenity.Title("Invalid name"))
+		return
+	}
+	if err := saveBranchTo(branchCSVPath(), code, name); err != nil {
+		_ = zenity.Error("Could not save branches.csv:\n"+err.Error(), zenity.Title("Save failed"))
+		return
+	}
+	branchThaiName[code] = name // reflect immediately in the list
+	verb := "Added"
+	if existing != "" {
+		verb = "Updated"
+	}
+	_ = zenity.Info(
+		fmt.Sprintf("%s branch %s -> %s\n\nSaved to:\n%s", verb, code, name, branchCSVPath()),
+		zenity.Title("Saved"),
+	)
+}
+
+func sortedBranchCodes() []string {
+	codes := make([]string, 0, len(branchThaiName))
+	for c := range branchThaiName {
+		codes = append(codes, c)
+	}
+	sort.Slice(codes, func(i, j int) bool {
+		a, _ := strconv.Atoi(codes[i])
+		b, _ := strconv.Atoi(codes[j])
+		return a < b
+	})
+	return codes
 }
