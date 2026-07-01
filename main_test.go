@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/xuri/excelize/v2"
@@ -94,5 +98,53 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if v, _ := f.GetCellValue(sheetName, "A1"); v != "ใบสั่งซื้อเลขที่ 1042000789" {
 		t.Errorf("A1 = %q", v)
+	}
+}
+
+// saveBranchTo backs the in-app "add/edit branch": BOM, Thai, comma-quoting,
+// update-in-place, preserve existing, sort by code.
+func TestSaveBranchTo(t *testing.T) {
+	p := t.TempDir() + "/branches.csv"
+	for _, e := range []struct{ code, name string }{
+		{"2999", "ทดสอบเก่า"},
+		{"1001", "เทส"},
+		{"2888", "ก,ข"},
+		{"2999", "ทดสอบใหม่"},
+	} {
+		if err := saveBranchTo(p, e.code, e.name); err != nil {
+			t.Fatalf("saveBranchTo: %v", err)
+		}
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		t.Error("missing UTF-8 BOM")
+	}
+	got := map[string]string{}
+	r := csv.NewReader(strings.NewReader(decodeText(data)))
+	r.FieldsPerRecord = -1
+	for {
+		rec, e := r.Read()
+		if e != nil {
+			break
+		}
+		if len(rec) >= 2 && digitsRe.MatchString(strings.TrimSpace(rec[0])) {
+			got[strings.TrimSpace(rec[0])] = rec[1]
+		}
+	}
+	if got["1001"] != "เทส" {
+		t.Errorf("1001 = %q, want เทส", got["1001"])
+	}
+	if got["2888"] != "ก,ข" {
+		t.Errorf("2888 = %q, want ก,ข (comma round-trip)", got["2888"])
+	}
+	if got["2999"] != "ทดสอบใหม่" {
+		t.Errorf("2999 = %q, want ทดสอบใหม่ (updated)", got["2999"])
+	}
+	dec := decodeText(data)
+	if strings.Index(dec, "1001") > strings.Index(dec, "2999") {
+		t.Error("rows not sorted by code")
 	}
 }

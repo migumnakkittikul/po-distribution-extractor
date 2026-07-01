@@ -511,3 +511,57 @@ func decodeText(b []byte) string {
 	}
 	return string(b)
 }
+
+// branchCSVPath is the branches.csv location: next to the program executable.
+func branchCSVPath() string {
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "branches.csv")
+	}
+	return "branches.csv"
+}
+
+// saveBranchTo adds or updates one branch in the CSV at path, preserving any
+// existing rows. The file is (re)written as UTF-8 with a BOM (so Excel reads Thai
+// correctly), with a header and rows sorted by code.
+func saveBranchTo(path, code, name string) error {
+	entries := map[string]string{}
+	if data, err := os.ReadFile(path); err == nil {
+		r := csv.NewReader(strings.NewReader(decodeText(data)))
+		r.FieldsPerRecord = -1
+		r.TrimLeadingSpace = true
+		for {
+			rec, e := r.Read()
+			if e != nil {
+				break
+			}
+			if len(rec) >= 2 {
+				if c := strings.TrimSpace(rec[0]); digitsRe.MatchString(c) {
+					entries[c] = strings.TrimSpace(rec[1])
+				}
+			}
+		}
+	}
+	entries[code] = name
+
+	codes := make([]string, 0, len(entries))
+	for c := range entries {
+		codes = append(codes, c)
+	}
+	sort.Slice(codes, func(i, j int) bool {
+		a, _ := strconv.Atoi(codes[i])
+		b, _ := strconv.Atoi(codes[j])
+		return a < b
+	})
+
+	var sb strings.Builder
+	sb.WriteString("code,thai_name\r\n") //  = UTF-8 BOM so Excel detects UTF-8
+	for _, c := range codes {
+		n := entries[c]
+		if strings.ContainsAny(n, ",\"\n\r") {
+			n = `"` + strings.ReplaceAll(n, `"`, `""`) + `"`
+		}
+		sb.WriteString(c + "," + n + "\r\n")
+	}
+	out := append([]byte{0xEF, 0xBB, 0xBF}, sb.String()...) // UTF-8 BOM so Excel detects UTF-8
+	return os.WriteFile(path, out, 0o644)
+}
