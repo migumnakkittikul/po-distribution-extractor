@@ -95,8 +95,17 @@ func main() {
 	loadBranchCSV() // optional branches.csv next to the program can add/override names
 
 	if *inFlag == "" && len(flag.Args()) == 0 {
-		runConvertGUI(*invFlag)
-		return
+		for {
+			switch guiMenu() {
+			case "convert":
+				runConvertGUI(*invFlag)
+				return
+			case "manage":
+				manageBranchesGUI()
+			default:
+				return
+			}
+		}
 	}
 
 	inPath, err := resolveInput(*inFlag, flag.Args())
@@ -646,4 +655,99 @@ func fail(err error) {
 	fmt.Fprintln(os.Stderr, "\nError:", err)
 	pause()
 	os.Exit(1)
+}
+
+// guiMenu shows the start screen and returns "convert", "manage", or "exit".
+func guiMenu() string {
+	err := zenity.Question(
+		"What would you like to do?",
+		zenity.Title("PO Distribution"),
+		zenity.OKLabel("Convert a PO PDF"),
+		zenity.ExtraButton("Manage branches"),
+		zenity.CancelLabel("Exit"),
+	)
+	switch {
+	case err == nil:
+		return "convert"
+	case errors.Is(err, zenity.ErrExtraButton):
+		return "manage"
+	default:
+		return "exit"
+	}
+}
+
+// manageBranchesGUI lets the user view all known branches and add/update names.
+func manageBranchesGUI() {
+	for {
+		codes := sortedBranchCodes()
+		items := make([]string, len(codes))
+		for i, c := range codes {
+			items[i] = c + "    " + branchThaiName[c]
+		}
+		_, err := zenity.List(
+			fmt.Sprintf("%d branches (code -> Thai name).", len(codes)),
+			items,
+			zenity.Title("Branches"),
+			zenity.OKLabel("Add / edit a branch"),
+			zenity.CancelLabel("Close"),
+			zenity.Height(460),
+		)
+		if errors.Is(err, zenity.ErrCanceled) || (err != nil && !errors.Is(err, zenity.ErrExtraButton)) {
+			return
+		}
+		addBranchGUI()
+	}
+}
+
+// addBranchGUI prompts for a code + Thai name and persists it to branches.csv.
+func addBranchGUI() {
+	code, err := zenity.Entry("Branch code (digits only, e.g. 61605):", zenity.Title("Add / edit a branch"))
+	if err != nil {
+		return // canceled
+	}
+	code = strings.TrimSpace(code)
+	if !digitsRe.MatchString(code) {
+		_ = zenity.Error("The branch code must be digits only (e.g. 61605).", zenity.Title("Invalid code"))
+		return
+	}
+	existing := branchThaiName[code]
+	name, err := zenity.Entry(
+		fmt.Sprintf("Thai name for branch %s:", code),
+		zenity.Title("Add / edit a branch"),
+		zenity.EntryText(existing),
+	)
+	if err != nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		_ = zenity.Error("The name cannot be empty.", zenity.Title("Invalid name"))
+		return
+	}
+	if err := saveBranchTo(branchCSVPath(), code, name); err != nil {
+		_ = zenity.Error("Could not save branches.csv:\n"+err.Error(), zenity.Title("Save failed"))
+		return
+	}
+	branchThaiName[code] = name // reflect immediately in the list
+	verb := "Added"
+	if existing != "" {
+		verb = "Updated"
+	}
+	_ = zenity.Info(
+		fmt.Sprintf("%s branch %s -> %s\n\nSaved to:\n%s", verb, code, name, branchCSVPath()),
+		zenity.Title("Saved"),
+	)
+}
+
+func sortedBranchCodes() []string {
+	codes := make([]string, 0, len(branchThaiName))
+	for c := range branchThaiName {
+		codes = append(codes, c)
+	}
+	sort.Slice(codes, func(i, j int) bool {
+		a, _ := strconv.Atoi(codes[i])
+		b, _ := strconv.Atoi(codes[j])
+		return a < b
+	})
+	return codes
 }
