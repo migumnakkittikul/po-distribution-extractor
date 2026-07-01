@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
+	"github.com/ncruces/zenity"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/text/encoding/charmap"
 )
@@ -84,28 +87,33 @@ var branchThaiName = map[string]string{
 }
 
 func main() {
-	inFlag := flag.String("in", "", "input PDF")
-	outFlag := flag.String("out", "", "output .xlsx")
-	invFlag := flag.String("invoice", "", "invoice number for cell E1 (optional)")
+	inFlag := flag.String("in", "", "input PDF (headless mode); if omitted, a file picker opens")
+	outFlag := flag.String("out", "", "output .xlsx (headless mode)")
+	invFlag := flag.String("invoice", "", "invoice number for cell E1 (optional; not present in the PDF)")
 	flag.Parse()
 
 	loadBranchCSV() // optional branches.csv next to the program can add/override names
 
+	if *inFlag == "" && len(flag.Args()) == 0 {
+		runConvertGUI(*invFlag)
+		return
+	}
+
 	inPath, err := resolveInput(*inFlag, flag.Args())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		fail(err)
 	}
 	outPath := *outFlag
 	if outPath == "" {
 		outPath = strings.TrimSuffix(inPath, filepath.Ext(inPath)) + ".xlsx"
 	}
+	fmt.Printf("Reading: %s\n", inPath)
 	nb, ni, err := convert(inPath, outPath, *invFlag, func(int, string) {})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		fail(err)
 	}
-	fmt.Printf("Wrote %s: %d branches, %d items\n", outPath, nb, ni)
+	fmt.Printf("\nDone.  Wrote %s\n  sheet %q - %d branches - %d items\n", outPath, sheetName, nb, ni)
+	pause()
 }
 
 // convert runs the PDF -> sheet pipeline, reporting progress via the callback.
@@ -564,4 +572,78 @@ func saveBranchTo(path, code, name string) error {
 	}
 	out := append([]byte{0xEF, 0xBB, 0xBF}, sb.String()...) // UTF-8 BOM so Excel detects UTF-8
 	return os.WriteFile(path, out, 0o644)
+}
+
+var stdin = bufio.NewReader(os.Stdin)
+
+// runConvertGUI is the convert flow: choose the PDF, choose where to save, show a
+// progress window, then a success/error message - all via native dialogs.
+func runConvertGUI(invoice string) {
+	inPath, err := zenity.SelectFile(
+		zenity.Title("Choose the purchase-order PDF"),
+		zenity.FileFilters{{Name: "PDF files", Patterns: []string{"*.pdf"}}},
+	)
+	if errors.Is(err, zenity.ErrCanceled) {
+		return
+	}
+	if err != nil {
+		zenity.Error(err.Error(), zenity.Title("Error"))
+		return
+	}
+
+	defPath := filepath.Join(filepath.Dir(inPath),
+		strings.TrimSuffix(filepath.Base(inPath), filepath.Ext(inPath))+".xlsx")
+	outPath, err := zenity.SelectFileSave(
+		zenity.Title("Save the Excel file as"),
+		zenity.ConfirmOverwrite(),
+		zenity.Filename(defPath),
+		zenity.FileFilters{{Name: "Excel files", Patterns: []string{"*.xlsx"}}},
+	)
+	if errors.Is(err, zenity.ErrCanceled) {
+		return
+	}
+	if err != nil {
+		zenity.Error(err.Error(), zenity.Title("Error"))
+		return
+	}
+	if filepath.Ext(outPath) == "" {
+		outPath += ".xlsx"
+	}
+
+	dlg, derr := zenity.Progress(
+		zenity.Title("PO Distribution"),
+		zenity.MaxValue(100),
+		zenity.NoCancel(),
+	)
+	progress := func(pct int, msg string) {
+		if derr == nil {
+			dlg.Value(pct)
+			dlg.Text(msg)
+		}
+	}
+
+	nb, ni, cerr := convert(inPath, outPath, invoice, progress)
+	if derr == nil {
+		dlg.Complete()
+		dlg.Close()
+	}
+	if cerr != nil {
+		zenity.Error(cerr.Error(), zenity.Title("Conversion failed"))
+		return
+	}
+	zenity.Info(
+		fmt.Sprintf("Done!\n\nSaved to:\n%s\n\n%d branches - %d items", outPath, nb, ni),
+		zenity.Title("PO Distribution"),
+	)
+}
+
+func pause() {
+	fmt.Print("\nPress Enter to close...")
+	stdin.ReadString('\n')
+}
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, "\nError:", err)
+	pause()
+	os.Exit(1)
 }
