@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/ledongthuc/pdf v0.0.0-20240201131950-da5b75280b06
 	github.com/xuri/excelize/v2 v2.9.0
+	golang.org/x/text v0.19.0
 )
 
 require (
@@ -15,5 +16,4 @@ require (
 	github.com/xuri/nfp v0.0.0-20240318013403-ab9948c2c4a7 // indirect
 	golang.org/x/crypto v0.28.0 // indirect
 	golang.org/x/net v0.30.0 // indirect
-	golang.org/x/text v0.19.0 // indirect
 )
