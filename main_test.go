@@ -99,6 +99,9 @@ func TestEndToEnd(t *testing.T) {
 	if v, _ := f.GetCellValue(sheetName, "A1"); v != "ใบสั่งซื้อเลขที่ 1042000789" {
 		t.Errorf("A1 = %q", v)
 	}
+	if v, _ := f.GetCellValue(sheetName, "E1"); v != "" {
+		t.Errorf("E1 = %q, want blank", v)
+	}
 }
 
 // saveBranchTo backs the in-app "add/edit branch": BOM, Thai, comma-quoting,
@@ -146,5 +149,33 @@ func TestSaveBranchTo(t *testing.T) {
 	dec := decodeText(data)
 	if strings.Index(dec, "1001") > strings.Index(dec, "2999") {
 		t.Error("rows not sorted by code")
+	}
+}
+
+func BenchmarkExtractLines(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := extractLines(samplePDF, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParse(b *testing.B) {
+	lines := mustLines(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parse(lines)
+	}
+}
+
+func BenchmarkConvert(b *testing.B) {
+	out := b.TempDir() + "/o.xlsx"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := convert(samplePDF, out, "", func(int, string) {}); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
